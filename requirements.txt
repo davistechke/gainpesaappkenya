@@ -1,0 +1,9 @@
+flask
+python-dotenv
+requests
+fpdf
+gunicorn
+Flask-Mail
+itsdangerous
+werkzeug
+resend
