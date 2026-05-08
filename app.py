@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 import requests
 import logging
+import resend
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for, make_response, flash
@@ -21,7 +22,6 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
-import os
 
 if os.getenv("RENDER") == "true":
     os.environ["WERKZEUG_RUN_MAIN"] = "true"
@@ -44,94 +44,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = os.getenv("RENDER") == "true"
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 
-
 # =========================
-# MAIL CONFIG
+# RESEND EMAIL CONFIG
 # =========================
-MAIL_ENABLED = False
-mail = None
-_MailMessage = None
-
-_mail_user = os.getenv("MAIL_USERNAME")
-_mail_pass = os.getenv("MAIL_PASSWORD")
-
-IS_RENDER = os.getenv("RENDER") == "true"
-
-if _mail_user and _mail_pass and not IS_RENDER:
-    try:
-        from flask_mail import Mail, Message as __Msg
-
-        app.config.update(
-            MAIL_SERVER="smtp.gmail.com",
-            MAIL_PORT=587,
-            MAIL_USE_TLS=True,
-            MAIL_USE_SSL=False,
-            MAIL_USERNAME=_mail_user,
-            MAIL_PASSWORD=_mail_pass,
-            MAIL_DEFAULT_SENDER=_mail_user,
-            MAIL_SUPPRESS_SEND=False,
-        )
-
-        mail = Mail(app)
-        _MailMessage = __Msg
-        MAIL_ENABLED = True
-
-        print(f"[Mail] ACTIVE (LOCAL ONLY): {_mail_user}")
-
-    except Exception as e:
-        print(f"[Mail] Init failed: {e}")
-
-else:
-    print("[Mail] DISABLED on Render (safe mode)")
-
-
-# =========================
-# DEBUG ROUTES
-# =========================
-
-@app.route("/debug-mail")
-def debug_mail():
-    return jsonify({
-        "MAIL_ENABLED": MAIL_ENABLED,
-        "MAIL_USERNAME": os.getenv("MAIL_USERNAME"),
-        "MAIL_PASSWORD_EXISTS": bool(os.getenv("MAIL_PASSWORD")),
-        "MAIL_SERVER": app.config.get("MAIL_SERVER"),
-        "MAIL_PORT": app.config.get("MAIL_PORT"),
-    })
-
-
-@app.route("/test-mail")
-def test_mail():
-    try:
-
-        if not MAIL_ENABLED:
-            return jsonify({
-                "success": False,
-                "error": "MAIL NOT ENABLED"
-            })
-
-        msg = _MailMessage(
-            subject="GainPesa Test Email",
-            recipients=[os.getenv("MAIL_USERNAME")]
-        )
-
-        msg.body = "Render SMTP test successful."
-
-        mail.send(msg)
-
-        return jsonify({
-            "success": True,
-            "message": "EMAIL SENT SUCCESSFULLY"
-        })
-
-    except Exception as e:
-
-        app.logger.error(f"[TEST MAIL ERROR] {str(e)}")
-
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        })
+resend.api_key = os.getenv("RESEND_API_KEY")
 
 serializer = URLSafeTimedSerializer(app.secret_key)
 
@@ -247,32 +163,65 @@ def login_required(f):
 
 
 def send_reset_email(to_email: str, reset_link: str) -> bool:
+    """Send password reset email via Resend."""
     try:
-        # 🔥 FORCE NON-BLOCKING EMAIL MODE ON RENDER
-        if os.getenv("RENDER") == "true":
-            print("\n[RESET EMAIL - RENDER MODE]")
-            print("TO:", to_email)
-            print("LINK:", reset_link)
-            print("=" * 60)
-            return True  # prevent crash + simulate success
-
-        # REAL EMAIL MODE (LOCAL)
-        if MAIL_ENABLED and mail and _MailMessage:
-            msg = _MailMessage(
-                subject="GainPesa – Password Reset Request",
-                recipients=[to_email],
-            )
-            msg.body = f"Reset link:\n\n{reset_link}"
-            mail.send(msg)
-            return True
-
+        params = {
+            "from": "GainPesa <onboarding@resend.dev>",  # Change to your verified domain later e.g. noreply@gainpesa.com
+            "to": [to_email],
+            "subject": "GainPesa – Password Reset Request",
+            "html": f"""
+                <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px;">
+                    <h2 style="color: #2e7d32;">GainPesa Password Reset</h2>
+                    <p>You requested a password reset. Click the button below to set a new password:</p>
+                    <a href="{reset_link}" 
+                       style="display:inline-block; background:#2e7d32; color:white; padding:12px 24px;
+                              text-decoration:none; border-radius:6px; margin: 16px 0;">
+                        Reset My Password
+                    </a>
+                    <p style="color:#666; font-size:13px;">This link expires in <strong>1 hour</strong>.</p>
+                    <p style="color:#666; font-size:13px;">If you did not request this, ignore this email.</p>
+                    <hr style="border:none; border-top:1px solid #eee; margin-top:30px;">
+                    <p style="color:#aaa; font-size:11px;">GainPesa &copy; {datetime.datetime.now().year}</p>
+                </div>
+            """,
+        }
+        response = resend.Emails.send(params)
+        app.logger.info(f"[RESEND] Email sent to {to_email} | Response: {response}")
+        return True
     except Exception as e:
-        app.logger.error(f"[MAIL ERROR] {e}")
+        app.logger.error(f"[RESEND ERROR] Failed to send to {to_email}: {e}")
+        return False
 
-    return False
 
 def build_reset_url(token: str) -> str:
     return url_for("reset_password", token=token, _external=True)
+
+
+# =========================
+# DEBUG ROUTES
+# =========================
+
+@app.route("/debug-mail")
+def debug_mail():
+    return jsonify({
+        "RESEND_API_KEY_SET": bool(os.getenv("RESEND_API_KEY")),
+        "RENDER": os.getenv("RENDER"),
+    })
+
+
+@app.route("/test-mail")
+def test_mail():
+    try:
+        params = {
+            "from": "GainPesa <onboarding@resend.dev>",
+            "to": ["delivered@resend.dev"],  # Resend's test address
+            "subject": "GainPesa Test Email",
+            "text": "Resend is working correctly on Render.",
+        }
+        response = resend.Emails.send(params)
+        return jsonify({"success": True, "response": str(response)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 
 @app.route("/")
@@ -346,19 +295,17 @@ def forgot_password():
             if user:
                 token      = serializer.dumps(user["email"], salt="gainpesa-password-reset")
                 reset_link = build_reset_url(token)
+                app.logger.info(f"[RESET LINK] Generated for {user['email']}: {reset_link}")
                 email_sent = send_reset_email(user["email"], reset_link)
                 if email_sent:
                     flash("Reset link sent — check your inbox (and spam folder).", "info")
                 else:
-                    flash(
-                        "Request received. If your email is registered, check your inbox. "
-                        "If no email arrives within a few minutes, contact support.",
-                        "info"
-                    )
+                    flash("Could not send email. Please contact support.", "error")
             else:
-                flash("Request received. If your email is registered, a reset link has been sent.", "info")
+                # Don't reveal whether email exists
+                flash("If that email is registered, a reset link has been sent.", "info")
         except Exception as e:
-            app.logger.error(f"[ForgotPassword] {e}")
+            app.logger.error(f"[ForgotPassword CRITICAL] {e}", exc_info=True)
             flash("Something went wrong. Please try again.", "error")
         finally:
             conn.close()
@@ -546,8 +493,8 @@ def execute_binary_trade():
     conn=get_db_connection(); user=conn.execute("SELECT binary_balance FROM users WHERE email=?",(email,)).fetchone()
     if user["binary_balance"]<amount: conn.close(); return jsonify({"error":"Insufficient Trading Balance"}),400
 
-    # ── 100% win rate: 80% profit on every trade ──────────────────
-    payout = round(amount * 1.8, 2)   # stake returned + 80% profit
+    # 100% win rate: 80% profit on every trade
+    payout = round(amount * 1.8, 2)
     profit = round(amount * 0.8, 2)
     conn.execute("UPDATE users SET binary_balance=binary_balance-?+? WHERE email=?",(amount,payout,email))
     conn.execute("UPDATE users SET binary_winnings=binary_winnings+?,total_earned=total_earned+? WHERE email=?",(payout,profit,email))
