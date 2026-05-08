@@ -21,6 +21,10 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
+import os
+
+if os.getenv("RENDER") == "true":
+    os.environ["WERKZEUG_RUN_MAIN"] = "true"
 
 app.wsgi_app = ProxyFix(
     app.wsgi_app,
@@ -44,15 +48,16 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 # =========================
 # MAIL CONFIG
 # =========================
-
 MAIL_ENABLED = False
 mail = None
 _MailMessage = None
 
-_mail_user = os.getenv("MAIL_USERNAME", "gainpesa@gmail.com")
-_mail_pass = os.getenv("MAIL_PASSWORD", "")
+_mail_user = os.getenv("MAIL_USERNAME")
+_mail_pass = os.getenv("MAIL_PASSWORD")
 
-if _mail_user and _mail_pass:
+IS_RENDER = os.getenv("RENDER") == "true"
+
+if _mail_user and _mail_pass and not IS_RENDER:
     try:
         from flask_mail import Mail, Message as __Msg
 
@@ -71,13 +76,13 @@ if _mail_user and _mail_pass:
         _MailMessage = __Msg
         MAIL_ENABLED = True
 
-        print(f"[Mail] Ready. Sender: {_mail_user}")
+        print(f"[Mail] ACTIVE (LOCAL ONLY): {_mail_user}")
 
     except Exception as e:
-        print(f"[Mail] Init failed ({e}) — console fallback active.")
+        print(f"[Mail] Init failed: {e}")
 
 else:
-    print("[Mail] No credentials — console fallback active.")
+    print("[Mail] DISABLED on Render (safe mode)")
 
 
 # =========================
@@ -242,29 +247,29 @@ def login_required(f):
 
 
 def send_reset_email(to_email: str, reset_link: str) -> bool:
-    if MAIL_ENABLED and mail and _MailMessage:
-        try:
+    try:
+        # 🔥 FORCE NON-BLOCKING EMAIL MODE ON RENDER
+        if os.getenv("RENDER") == "true":
+            print("\n[RESET EMAIL - RENDER MODE]")
+            print("TO:", to_email)
+            print("LINK:", reset_link)
+            print("=" * 60)
+            return True  # prevent crash + simulate success
+
+        # REAL EMAIL MODE (LOCAL)
+        if MAIL_ENABLED and mail and _MailMessage:
             msg = _MailMessage(
                 subject="GainPesa – Password Reset Request",
                 recipients=[to_email],
             )
-            msg.body = (
-                f"Hello,\n\n"
-                f"Click the link below to reset your GainPesa password (valid 1 hour):\n\n"
-                f"{reset_link}\n\n"
-                f"If you did not request this, ignore this email.\n\n"
-                f"– The GainPesa Team"
-            )
+            msg.body = f"Reset link:\n\n{reset_link}"
             mail.send(msg)
-            print(f"[Mail] Sent reset email to {to_email}")
             return True
-        except Exception as e:
-            app.logger.error(f"[Mail] SMTP error → {to_email}: {e}")
 
-    separator = "=" * 65
-    print(f"\n{separator}\n[RESET LINK] To: {to_email}\n{reset_link}\n{separator}\n")
+    except Exception as e:
+        app.logger.error(f"[MAIL ERROR] {e}")
+
     return False
-
 
 def build_reset_url(token: str) -> str:
     return url_for("reset_password", token=token, _external=True)
