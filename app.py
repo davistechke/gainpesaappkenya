@@ -13,7 +13,10 @@ from flask import Flask, jsonify, redirect, render_template, request, session, u
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
-from fpdf import FPDF
+import io
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 from spin import spin_bp
 
@@ -608,22 +611,110 @@ def admin_mark_paid():
 @app.route("/admin/download-pdf/<status>")
 def download_users_pdf(status):
     if not session.get("is_admin"): return redirect(url_for("admin_login"))
-    conn=get_db_connection()
-    if status=="activated": users=conn.execute("SELECT * FROM users WHERE is_active=1").fetchall()
-    elif status=="pending": users=conn.execute("SELECT * FROM users WHERE is_active=0").fetchall()
-    else: users=conn.execute("SELECT * FROM users").fetchall()
+    conn = get_db_connection()
+    if status == "activated":
+        users = conn.execute("SELECT * FROM users WHERE is_active=1").fetchall()
+    elif status == "pending":
+        users = conn.execute("SELECT * FROM users WHERE is_active=0").fetchall()
+    else:
+        users = conn.execute("SELECT * FROM users").fetchall()
     conn.close()
-    pdf=FPDF(); pdf.add_page(); pdf.set_font("Arial",'B',16)
-    pdf.cell(190,10,f"GAINPESA - {status.upper()} USERS REPORT",ln=True,align='C'); pdf.ln(10)
-    pdf.set_font("Arial",'B',10)
-    pdf.cell(60,10,"Email",1); pdf.cell(40,10,"Username",1); pdf.cell(40,10,"Balance",1); pdf.cell(50,10,"Joined At",1); pdf.ln()
-    pdf.set_font("Arial",'',9)
-    for u in users:
-        pdf.cell(60,10,str(u['email']),1); pdf.cell(40,10,str(u['username']),1)
-        pdf.cell(40,10,f"Ksh {u['balance']:.2f}",1); pdf.cell(50,10,str(u['joined_at']),1); pdf.ln()
-    resp=make_response(pdf.output(dest='S').encode('latin-1'))
-    resp.headers.set('Content-Disposition','attachment',filename=f'{status}_users.pdf')
-    resp.headers.set('Content-Type','application/pdf'); return resp
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"{status.title()} Users"
+
+    # ── Title row ──────────────────────────────────────────────────
+    green  = "1B5E20"
+    lgreen = "C8E6C9"
+    white  = "FFFFFF"
+    grey   = "F5F5F5"
+
+    ws.merge_cells("A1:G1")
+    title_cell = ws["A1"]
+    title_cell.value = f"GAINPESA — {status.upper()} USERS REPORT"
+    title_cell.font      = Font(name="Arial", bold=True, size=14, color=white)
+    title_cell.fill      = PatternFill("solid", start_color=green)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    # Generated date row
+    ws.merge_cells("A2:G2")
+    date_cell = ws["A2"]
+    date_cell.value = f"Generated: {datetime.datetime.now().strftime('%d %b %Y %H:%M')}"
+    date_cell.font      = Font(name="Arial", italic=True, size=9, color="555555")
+    date_cell.alignment = Alignment(horizontal="right")
+    ws.row_dimensions[2].height = 16
+
+    # ── Header row ─────────────────────────────────────────────────
+    headers = ["#", "Email", "Username", "Phone", "Balance (Ksh)",
+               "Status", "Joined At"]
+    thin = Side(style="thin", color="BDBDBD")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=3, column=col_idx, value=h)
+        cell.font      = Font(name="Arial", bold=True, size=10, color=white)
+        cell.fill      = PatternFill("solid", start_color=green)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border    = border
+    ws.row_dimensions[3].height = 20
+
+    # ── Data rows ──────────────────────────────────────────────────
+    for row_idx, u in enumerate(users, start=1):
+        excel_row = row_idx + 3
+        fill_color = lgreen if row_idx % 2 == 0 else grey
+        row_data = [
+            row_idx,
+            u["email"],
+            u["username"],
+            u["phone"] or "",
+            round(float(u["balance"] or 0), 2),
+            "Active" if u["is_active"] else "Pending",
+            u["joined_at"] or "",
+        ]
+        for col_idx, val in enumerate(row_data, start=1):
+            cell = ws.cell(row=excel_row, column=col_idx, value=val)
+            cell.font      = Font(name="Arial", size=9)
+            cell.fill      = PatternFill("solid", start_color=fill_color)
+            cell.alignment = Alignment(horizontal="center" if col_idx in [1, 5, 6] else "left",
+                                       vertical="center")
+            cell.border    = border
+            if col_idx == 5:
+                cell.number_format = '#,##0.00'
+            if col_idx == 6:
+                cell.font = Font(name="Arial", size=9,
+                                 color="1B5E20" if u["is_active"] else "B71C1C",
+                                 bold=True)
+
+    # ── Totals row ─────────────────────────────────────────────────
+    total_row = len(users) + 4
+    ws.cell(row=total_row, column=4, value="TOTAL BALANCE").font = Font(bold=True, name="Arial", size=9)
+    total_cell = ws.cell(row=total_row, column=5,
+                         value=f"=SUM(E4:E{total_row - 1})")
+    total_cell.font         = Font(bold=True, name="Arial", size=9, color=green)
+    total_cell.number_format = '#,##0.00'
+    total_cell.border        = border
+
+    # ── Column widths ──────────────────────────────────────────────
+    col_widths = [5, 35, 18, 18, 16, 12, 20]
+    for i, w in enumerate(col_widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # ── Freeze panes below header ──────────────────────────────────
+    ws.freeze_panes = "A4"
+
+    # ── Stream to response ─────────────────────────────────────────
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    resp = make_response(output.read())
+    resp.headers.set("Content-Disposition", "attachment",
+                     filename=f"{status}_users.xlsx")
+    resp.headers.set("Content-Type",
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return resp
 
 
 @app.route("/admin/activate-user", methods=["POST"])
