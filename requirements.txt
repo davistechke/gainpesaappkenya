@@ -7,3 +7,4 @@ Flask-Mail
 itsdangerous
 werkzeug
 resend
+fpdf
