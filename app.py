@@ -65,7 +65,7 @@ else:
 API_USERNAME = os.getenv("API_USERNAME")
 API_PASSWORD = os.getenv("API_PASSWORD", "gMMRAHjO3snOZgQI7kS2xPpLlXLcylaKqaW5CJXd")
 
-ACTIVATION_FEE         = 100.0
+ACTIVATION_FEE         = 1.0
 USD_TO_KES             = 130.0
 MIN_BINARY_DEPOSIT_KES = round(1.0 * USD_TO_KES, 2)
 
